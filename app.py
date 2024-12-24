@@ -70,6 +70,7 @@ def merge_video():
     user_video_path = None
     output_path = None
     temp_scaled_video = None
+    temp_black_video = None
     
     try:
         logger.info("Starting merge process")
@@ -85,84 +86,101 @@ def merge_video():
         timestamp = int(time.time())
         user_video_path = os.path.join(UPLOAD_FOLDER, f"input_{timestamp}.mp4")
         temp_scaled_video = os.path.join(UPLOAD_FOLDER, f"scaled_{timestamp}.mp4")
-        output_path = os.path.join(UPLOAD_FOLDER, f"output_{timestamp}.mp4")
+        temp_black_video = os.path.join(UPLOAD_FOLDER, f"black_{timestamp}.mp4")
+        output_path = os.path.join(UPLOAD_FOLDER, f"merged_{timestamp}.mp4")
         
         logger.info(f"Saving uploaded video to {user_video_path}")
         user_video.save(user_video_path)
-        
-        # FFmpeg version kontrolü
-        try:
-            ffmpeg_version = subprocess.check_output(['ffmpeg', '-version'])
-            logger.info(f"FFmpeg version: {ffmpeg_version.decode('utf-8').split()[2]}")
-        except Exception as e:
-            logger.error(f"FFmpeg check failed: {str(e)}")
-            return "FFmpeg not found", 500
 
-        # Video işleme
-        try:
-            logger.info("Processing video...")
-            
-            # Ölçeklendirme komutu
-            scale_cmd = [
-                'ffmpeg', '-y',
-                '-i', user_video_path,
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',  # daha hızlı encoding
-                '-crf', '28',  # biraz daha düşük kalite ama daha hızlı
-                temp_scaled_video
-            ]
-            
-            logger.info(f"Running scale command: {' '.join(scale_cmd)}")
-            run_command_with_timeout(scale_cmd)
-            
-            # Birleştirme komutu
-            merge_cmd = [
-                'ffmpeg', '-y',
-                '-i', STATIC_VIDEO,
-                '-i', temp_scaled_video,
-                '-i', STATIC_AUDIO,
-                '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0[outv]',
-                '-map', '[outv]',
-                '-map', '2:a',
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-crf', '28',
-                output_path
-            ]
-            
-            logger.info(f"Running merge command: {' '.join(merge_cmd)}")
-            run_command_with_timeout(merge_cmd)
-            
-        except Exception as e:
-            logger.error(f"Processing error: {str(e)}")
-            return f"Video processing error: {str(e)}", 500
-            
+        # Video.mp4'ün çözünürlüğünü al
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height',
+            '-of', 'json',
+            STATIC_VIDEO
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        video_info = json.loads(result.stdout)
+        target_width = video_info['streams'][0]['width']
+        target_height = video_info['streams'][0]['height']
+        
+        # Kullanıcının videosunu ölçeklendir
+        scale_cmd = [
+            'ffmpeg',
+            '-i', user_video_path,
+            '-vf', f'scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '23',
+            temp_scaled_video
+        ]
+        subprocess.run(scale_cmd, check=True)
+        
+        # 3 saniyelik siyah video oluştur
+        black_cmd = [
+            'ffmpeg',
+            '-f', 'lavfi',
+            '-i', f'color=c=black:s={target_width}x{target_height}:d=3',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '23',
+            temp_black_video
+        ]
+        subprocess.run(black_cmd, check=True)
+        
+        # Birleştirme için çıktı dosyası
+        output_path = os.path.join(UPLOAD_FOLDER, f"merged_{timestamp}.mp4")
+        
+        # Videoları birleştir ve müziği ekle
+        command = [
+            "ffmpeg",
+            "-i", STATIC_VIDEO,
+            "-i", temp_scaled_video,
+            "-i", temp_black_video,
+            "-i", STATIC_AUDIO,
+            "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[outv]",
+            "-map", "[outv]",
+            "-map", "3:a",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            output_path
+        ]
+        
+        subprocess.run(command, check=True)
+        
         # Dosyayı gönder
         try:
-            logger.info(f"Sending file: {output_path}")
-            return send_file(
-                output_path,
+            with open(output_path, 'rb') as f:
+                data = f.read()
+            
+            response = send_file(
+                io.BytesIO(data),
                 mimetype='video/mp4',
                 as_attachment=True,
                 download_name='yasemen.mp4'
             )
             
-        except Exception as e:
-            logger.error(f"File send error: {str(e)}")
-            return f"File send error: {str(e)}", 500
+            # Temizlik
+            for file_path in [user_video_path, output_path, temp_scaled_video, temp_black_video]:
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                    
+            return response
             
-    except Exception as e:
-        logger.error(f"General error: {str(e)}\n{traceback.format_exc()}")
-        return f"An error occurred: {str(e)}", 500
-        
-    finally:
-        # Temizlik
-        try:
-            for path in [user_video_path, temp_scaled_video, output_path]:
-                if path and os.path.exists(path):
-                    os.remove(path)
         except Exception as e:
-            logger.error(f"Cleanup error: {str(e)}")
+            raise Exception(f"Dosya gönderme hatası: {str(e)}")
+        
+    except Exception as e:
+        # Hata durumunda temizlik
+        for file_path in [user_video_path, output_path, temp_scaled_video, temp_black_video]:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        return str(e), 500
 
 @app.route("/")
 def main():
@@ -170,4 +188,4 @@ def main():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=True)
