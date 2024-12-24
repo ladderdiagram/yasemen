@@ -1,25 +1,33 @@
-FROM python:3.9
+# Use Ubuntu as base image
+FROM ubuntu:20.04
 
-# System dependencies
+# Prevent tzdata questions during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies and FFmpeg
 RUN apt-get update && \
     apt-get install -y \
+    python3 \
+    python3-pip \
     ffmpeg \
-    libsm6 \
-    libxext6 \
-    ncurses-bin \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Set Python aliases
+RUN ln -s /usr/bin/python3 /usr/bin/python && \
+    ln -s /usr/bin/pip3 /usr/bin/pip
 
 WORKDIR /app
 
-# Python dependencies
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
+# Copy the application
 COPY . .
 
-# Environment variables
+# Set environment variables
 ENV PORT=10000
 
-# Command to run the application
-CMD gunicorn app:app --bind 0.0.0.0:$PORT
+# Run the application
+CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 app:app
