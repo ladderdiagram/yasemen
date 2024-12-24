@@ -7,6 +7,7 @@ import json
 import io
 import time
 import traceback
+from functools import partial
 
 app = Flask(__name__)
 
@@ -24,6 +25,25 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     # Klasöre yazma izni ver
     os.chmod(UPLOAD_FOLDER, 0o777)
+
+# FFmpeg işlemleri için timeout değeri (saniye)
+FFMPEG_TIMEOUT = 300
+
+# subprocess.run için wrapper fonksiyon
+def run_command_with_timeout(cmd, timeout=FFMPEG_TIMEOUT):
+    try:
+        return subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(f"Command timed out after {timeout} seconds: {' '.join(cmd)}")
+        raise
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Command failed: {e.stderr.decode() if e.stderr else str(e)}")
+        raise
 
 def get_media_duration(file_path):
     try:
@@ -87,13 +107,13 @@ def merge_video():
                 'ffmpeg', '-y',
                 '-i', user_video_path,
                 '-c:v', 'libx264',
-                '-preset', 'medium',
-                '-crf', '23',
+                '-preset', 'ultrafast',  # daha hızlı encoding
+                '-crf', '28',  # biraz daha düşük kalite ama daha hızlı
                 temp_scaled_video
             ]
             
             logger.info(f"Running scale command: {' '.join(scale_cmd)}")
-            subprocess.run(scale_cmd, check=True, capture_output=True)
+            run_command_with_timeout(scale_cmd)
             
             # Birleştirme komutu
             merge_cmd = [
@@ -105,16 +125,16 @@ def merge_video():
                 '-map', '[outv]',
                 '-map', '2:a',
                 '-c:v', 'libx264',
-                '-preset', 'medium',
-                '-crf', '23',
+                '-preset', 'ultrafast',
+                '-crf', '28',
                 output_path
             ]
             
             logger.info(f"Running merge command: {' '.join(merge_cmd)}")
-            subprocess.run(merge_cmd, check=True, capture_output=True)
+            run_command_with_timeout(merge_cmd)
             
-        except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
+        except Exception as e:
+            logger.error(f"Processing error: {str(e)}")
             return f"Video processing error: {str(e)}", 500
             
         # Dosyayı gönder
