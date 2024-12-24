@@ -15,11 +15,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY . .
 
-# Create uploads directory
-RUN mkdir -p uploads
+# Create uploads directory with permissions
+RUN mkdir -p uploads && chmod 777 uploads
 
 # Environment variables
 ENV PORT=10000
 
-# Run the application
-CMD gunicorn --bind 0.0.0.0:$PORT app:app
+# Run the application with increased timeout
+CMD gunicorn --bind 0.0.0.0:$PORT \
+    --workers 1 \
+    --threads 4 \
+    --timeout 300 \
+    --keep-alive 5 \
+    --log-level debug \
+    --worker-class sync \
+    app:app
