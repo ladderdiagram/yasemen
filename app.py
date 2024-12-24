@@ -30,6 +30,12 @@ def get_media_duration(file_path):
     data = json.loads(result.stdout)
     return float(data['format']['duration'])
 
+try:
+    ffmpeg_version = subprocess.check_output(['ffmpeg', '-version'])
+    print("FFmpeg version:", ffmpeg_version.decode('utf-8').split('\n')[0])
+except Exception as e:
+    print("FFmpeg error:", str(e))
+
 @app.route("/merge", methods=["POST"])
 def merge_video():
     user_video_path = None
